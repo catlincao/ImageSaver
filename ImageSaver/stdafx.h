@@ -53,7 +53,8 @@
 
 
 
-
+extern void SAVEAPICTURE();
+char* str2char(CString str); //CString->const char *
 
 
 

@@ -8,6 +8,8 @@
 #include <fstream>
 using namespace std;
 
+
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
@@ -17,10 +19,10 @@ using namespace std;
 extern int cnum; // 控制开启一次stream采图的数量
 extern int CINDEX; //开启的相机索引，默认开启第0号相机
 
-
+CImageSaverDlg *CImageSaverDlg::instance = NULL;
 
 CImageSaverDlg::CImageSaverDlg(CWnd* pParent /*=NULL*/)
-	: CDialog(CImageSaverDlg::IDD, pParent)
+	: CDialogEx(CImageSaverDlg::IDD, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 
@@ -28,17 +30,23 @@ CImageSaverDlg::CImageSaverDlg(CWnd* pParent /*=NULL*/)
 	m_hCamera	= NULL; 
 	m_hView		= NULL;
 	m_hThread	= NULL;
-
+	
+	instance = this;
+	/*使用redis必须添加上去*/
+	WSAData wsaData;
+	WSAStartup(MAKEWORD(1, 1), &wsaData);
 }
 
 void CImageSaverDlg::DoDataExchange(CDataExchange* pDX)
 {
-	CDialog::DoDataExchange(pDX);
+	CDialogEx::DoDataExchange(pDX);
 }
 
-BEGIN_MESSAGE_MAP(CImageSaverDlg, CDialog)
+BEGIN_MESSAGE_MAP(CImageSaverDlg, CDialogEx)
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
+	ON_WM_DESTROY()
+	ON_WM_TIMER()
 	//}}AFX_MSG_MAP
 	ON_BN_CLICKED(IDOK, &CImageSaverDlg::OnBnClickedOk)
 	ON_BN_CLICKED(IDC_BUTTON1, &CImageSaverDlg::OnBnClickedButton1)
@@ -53,7 +61,7 @@ END_MESSAGE_MAP()
 
 BOOL CImageSaverDlg::OnInitDialog()
 {
-	CDialog::OnInitDialog();
+	CDialogEx::OnInitDialog();
 
 	// Set the icon for this dialog.  The framework does this automatically
 	//  when the application's main window is not a dialog
@@ -61,6 +69,13 @@ BOOL CImageSaverDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 	// TODO: Add extra initialization here
 	//CINDEX = 1;
+	/////////////////////////////////////////////////////////////////////////////
+	/*
+	不显示窗口
+	*/
+	SetWindowPos(&CWnd::wndNoTopMost, 0, 0, 0, 0, SWP_HIDEWINDOW);
+	ModifyStyleEx(WS_EX_APPWINDOW, WS_EX_TOOLWINDOW);
+	////////////////////////////////////////////////////////////////////////////
 	switch (CINDEX)
 	{
 	case 0:path = _T(".//images//camera1//cam1-"); SetWindowText(_T("camera1"));		break;
@@ -73,6 +88,22 @@ BOOL CImageSaverDlg::OnInitDialog()
 
 	GetDlgItem(IDC_BUTTON_NAMERESET)->EnableWindow(true);
 	SetDlgItemInt(IDC_NAME, 0, 0);
+	//初始化连接
+	m_ipAddr = _T("127.0.0.1");
+	m_Port = 6379;
+	if (!m_psM.Connect(m_ipAddr, m_Port))
+	{
+		AfxMessageBox("未能连接redis数据库");
+		ExitProcess(1);
+	}
+	//默认监听CCDCaptureSync频道
+	m_Channel = _T("CCDCaptureSync");
+	m_psM.Subscribe(m_Channel);
+	//打开一个定时器，以100ms的时间来检测是否有信息进来
+	SetTimer(1001, 100, NULL);
+	OnBnClickedButton1();
+	Sleep(400);
+	OnBnClickedButtonStart();
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
 
@@ -101,7 +132,7 @@ void CImageSaverDlg::OnPaint()
 	}
 	else
 	{
-		CDialog::OnPaint();
+		CDialogEx::OnPaint();
 	}
 }
 
@@ -323,6 +354,7 @@ void CImageSaverDlg::CloseFactoryAndCamera()
 void CImageSaverDlg::OnBnClickedOk()
 {
 	CloseFactoryAndCamera();
+	OnDestroy();
 	OnOK();
 }
 
@@ -444,7 +476,7 @@ void CImageSaverDlg::Swtrigger()
 		status = J_Camera_SetValueInt64(m_hCamera, (int8_t*)"SoftwareTrigger0", 1);
 		if (status != J_ST_SUCCESS)
 		{
-			ShowErrorMsg(CString("设置SoftwareTrigger0=1失败"), status);
+			ShowErrorMsg(CString("0.设置SoftwareTrigger0=1失败"), status);
 			return;
 		}
 
@@ -581,7 +613,7 @@ void CImageSaverDlg::OnBnClickedButtonSave()
 		status = J_Camera_SetValueInt64(m_hCamera, (int8_t*)"SoftwareTrigger0", 1);
 		if (status != J_ST_SUCCESS)
 		{
-			ShowErrorMsg(CString("设置SoftwareTrigger0=1失败"), status);
+			ShowErrorMsg(CString("1.设置SoftwareTrigger0=1失败"), status);
 			return;
 		}
 
@@ -617,4 +649,67 @@ void CImageSaverDlg::OnBnClickedButtonNamereset()
 	/*namefile.seekg(0, ios::beg);*/
 	namefile << temp;
 	namefile.close();
+}
+
+
+
+void CImageSaverDlg::SaveAPicture() //用于redis的保存函数（静态成员函数）
+{
+	J_STATUS_TYPE status = J_ST_SUCCESS;
+	NODE_HANDLE hNode = NULL;
+	status = J_Camera_GetNodeByName(instance->m_hCamera, (int8_t*)"TriggerSoftware", &hNode);
+
+	if ((status == J_ST_SUCCESS) && (hNode != NULL))
+	{
+		status = J_Camera_SetValueString(instance->m_hCamera, (int8_t*)"TriggerSelector", (int8_t*)"FrameStart");
+		if (status != J_ST_SUCCESS)
+		{
+			instance->ShowErrorMsg(CString("设置TriggerSelector=FrameStart失败"), status);
+			return;
+		}
+		status = J_Camera_ExecuteCommand(instance->m_hCamera, (int8_t*)"TriggerSoftware");
+		if (status != J_ST_SUCCESS)
+		{
+			instance->ShowErrorMsg(CString("执行TriggerSoftware失败！"), status);
+			return;
+		}
+	}
+	else
+	{
+
+		status = J_Camera_SetValueInt64(instance->m_hCamera, (int8_t*)"SoftwareTrigger0", 1);
+		if (status != J_ST_SUCCESS)
+		{
+			instance->ShowErrorMsg(CString("2.设置SoftwareTrigger0=1失败"), status);
+			return;
+		}
+
+		status = J_Camera_SetValueInt64(instance->m_hCamera, (int8_t*)"SoftwareTrigger0", 0);
+		if (status != J_ST_SUCCESS)
+		{
+			instance->ShowErrorMsg(CString("设置SoftwareTrigger0=0失败"), status);
+			return;
+		}
+	}
+}
+
+void CImageSaverDlg::OnDestroy()
+{
+	CDialogEx::OnDestroy();
+	m_psM.Unsubscribe(m_Channel);
+	// TODO:  在此处添加消息处理程序代码
+}
+
+void CImageSaverDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	// TODO:  在此添加消息处理程序代码和/或调用默认值
+	//每次时间到都使用PubSubManager类的处理函数来判断是否有消息发布
+	m_psM.OnTimer();
+	CDialogEx::OnTimer(nIDEvent);
+}
+
+void SAVEAPICTURE()
+{
+	//全局函数，供PubSubManager类里面的消息处理回调函数进行调用
+	CImageSaverDlg::SaveAPicture();
 }

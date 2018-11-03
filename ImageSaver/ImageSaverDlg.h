@@ -2,22 +2,29 @@
 //
 
 #pragma once
+#include "PubSubManager.h"
 #include <Jai_Factory.h>
+#include "ImageSaver.h"
 #include "afxwin.h"
 #include "afxcmn.h"
 #include "Windows.h"
-#include "ImageSaver.h"
-#include "Resource.h"
-
+#include "afxdialogex.h"
+#include <afxwin.h>
 
 // CImageSaverDlg dialog
-class CImageSaverDlg : public CDialog
+class CImageSaverDlg : public CDialogEx
 {
 // Construction
 public:
 	CImageSaverDlg(CWnd* pParent = NULL);	// standard constructor
 
-
+	//redis 的参数定义
+	CString m_ipAddr;
+	int m_Port;
+	CString m_Channel;
+	CString m_message;
+	static void SaveAPicture();
+	
 	CString filename; 
 	CString path; 
 	CString tempCstring;
@@ -40,7 +47,8 @@ public:
 
 	protected:
 	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV support
-
+	PubSubManager m_psM;
+	static CImageSaverDlg *instance;
 
 // Implementation
 protected:
@@ -57,4 +65,6 @@ public:
 	afx_msg void OnBnClickedButtonStop();
 	afx_msg void OnBnClickedButtonSave();
 	afx_msg void OnBnClickedButtonNamereset();
+	afx_msg void OnDestroy();
+	afx_msg void OnTimer(UINT_PTR nIDEvent);
 };
